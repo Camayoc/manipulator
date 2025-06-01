@@ -120,3 +120,4 @@ __pypackages__/
 *.swp
 *~
 .idea/
+captures/*
