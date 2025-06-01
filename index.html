@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Manipulador Remoto – Chrome</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #fafafa;
+      text-align: center;
+      margin: 20px;
+    }
+    #pantalla {
+      border: 1px solid #333;
+      max-width: 100%;
+      cursor: crosshair; /* Indicador de “picker” */
+    }
+    #estado {
+      margin-top: 10px;
+    }
+    button {
+      margin: 5px;
+      padding: 8px 12px;
+    }
+    #clickStatus {
+      margin-top: 5px;
+      font-size: 0.9em;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h1>Manipulador Remoto – Chrome</h1>
+
+  <button id="btnStart">Iniciar sesión remota</button>
+  <button id="btnStop" disabled>Detener sesión</button>
+  <div id="estado">Sesión inactiva.</div>
+
+  <div id="controles" style="display:none; margin-top: 15px;">
+    <p>Haz clic directamente sobre la imagen para enviar un clic remoto.</p>
+    <div id="clickStatus"></div>
+  </div>
+
+  <div style="margin-top: 15px;">
+    <img id="pantalla" src="" alt="Aquí se mostrará la captura" style="display:none;" />
+  </div>
+
+  <script>
+    let sessionId = null;
+    let intervalo = null;
+    const FPS = 2; // 2 capturas por segundo (500 ms)
+
+    const imgEl = document.getElementById("pantalla");
+    const estadoEl = document.getElementById("estado");
+    const clickStatusEl = document.getElementById("clickStatus");
+    const controlesEl = document.getElementById("controles");
+    const btnStart = document.getElementById("btnStart");
+    const btnStop = document.getElementById("btnStop");
+
+    // Iniciar sesión remota
+    btnStart.addEventListener("click", async () => {
+      estadoEl.innerText = "Iniciando sesión…";
+      try {
+        const resp = await fetch("/start_session", { method: "POST" });
+        const data = await resp.json();
+        if (data.session_id) {
+          sessionId = data.session_id;
+          estadoEl.innerText = "Sesión activa: " + sessionId;
+
+          imgEl.style.display = "block";
+          controlesEl.style.display = "block";
+          btnStop.disabled = false;
+          btnStart.disabled = true;
+
+          // Cada 500 ms recargamos la imagen
+          intervalo = setInterval(() => {
+            imgEl.src = `/get_capture/${sessionId}?_=${Date.now()}`;
+          }, 1000 / FPS);
+        } else {
+          estadoEl.innerText = "Error al iniciar: " + (data.error || "sin respuesta");
+        }
+      } catch (e) {
+        estadoEl.innerText = "Error al iniciar: " + e;
+      }
+    });
+
+    // Detener sesión remota
+    btnStop.addEventListener("click", async () => {
+      if (!sessionId) return;
+      await fetch(`/stop_session/${sessionId}`, { method: "POST" });
+      clearInterval(intervalo);
+      imgEl.style.display = "none";
+      controlesEl.style.display = "none";
+      estadoEl.innerText = "Sesión detenida.";
+      btnStop.disabled = true;
+      btnStart.disabled = false;
+      sessionId = null;
+    });
+
+    // Función auxiliar: enviar clic al servidor
+    async function enviarClick(x_rel, y_rel) {
+      clickStatusEl.innerText = `Enviando clic a (${x_rel}, ${y_rel})…`;
+      try {
+        const resp = await fetch(`/click/${sessionId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ x: x_rel, y: y_rel })
+        });
+        const data = await resp.json();
+        if (data.action_id) {
+          clickStatusEl.innerText = `Clic enviado (action_id: ${data.action_id})`;
+        } else {
+          clickStatusEl.innerText = `Error al enviar clic: ${data.error || "sin respuesta"}`;
+        }
+      } catch (e) {
+        clickStatusEl.innerText = `Error al enviar clic: ${e}`;
+      }
+    }
+
+    // Evento “picker”: al hacer clic sobre la imagen, calcular coordenadas relativas
+    imgEl.addEventListener("click", event => {
+      if (!sessionId) return;
+      // Obtener posición del elemento <img> en pantalla
+      const rect = imgEl.getBoundingClientRect();
+      // Coordenadas del clic respecto a la esquina superior izquierda de la imagen en CSS px
+      const clickX = event.clientX - rect.left;
+      const clickY = event.clientY - rect.top;
+      // La imagen pudo haber sido escalada por “max-width:100%”
+      // Calculamos el factor real:
+      const displayedWidth = imgEl.clientWidth;
+      const displayedHeight = imgEl.clientHeight;
+      // La imagen original (capturada en el servidor) tenía un tamaño igual a la ventana remota:
+      // asumimos que la proporción se mantiene y que clientWidth/clientHeight está 
+      // escalado proporcionalmente a width/height reales.
+      // Por tanto:
+      const relX = Math.round(clickX * (imgEl.naturalWidth / displayedWidth));
+      const relY = Math.round(clickY * (imgEl.naturalHeight / displayedHeight));
+      // Enviamos ese clic relativo
+      enviarClick(relX, relY);
+    });
+
+    // Cuando la imagen se carga por primera vez, limpiamos mensaje de estado de clic
+    imgEl.addEventListener("load", () => {
+      clickStatusEl.innerText = "";
+    });
+  </script>
+</body>
+</html>
