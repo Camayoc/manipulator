@@ -55,13 +55,12 @@ def start_chrome_linux():
         # 2) Lanzar Chrome maximizado en ese DISPLAY
         env = os.environ.copy()
         env["DISPLAY"] = display
-
+        chrome_exe = "/usr/bin/google-chrome"
         chrome_cmd = [
-            "google-chrome",
+            chrome_exe,
             "--no-sandbox",
             "--disable-gpu",
             "--start-maximized",
-            "--user-data-dir=/tmp/remote-profile-{}".format(uuid.uuid4()),
             "about:blank"
         ]
         chrome_proc = subprocess.Popen(chrome_cmd, env=env,
