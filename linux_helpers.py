@@ -1,7 +1,12 @@
 # linux_helpers.py
 # ----------------
-# Lógica específica para ejecutar y controlar Chrome en Linux (X11 + Xvfb),
-# arrancando maximizado y capturando toda la ventana (incluye decoración).
+# Lógica para Linux (Xvfb + xdotool) que:
+#  1. Arranca Xvfb
+#  2. Lanza Chrome maximizado
+#  3. Detecta la ventana con xdotool search
+#  4. Captura toda la ventana con ImageGrab
+#  5. Simula clics usando xdotool
+#  6. Detiene procesos
 
 import os
 import time
@@ -25,6 +30,7 @@ def find_free_display():
         if socket_path.exists():
             continue
 
+        # Verificar si ya hay Xvfb corriendo en ese DISPLAY
         cmd = ["pgrep", "-f", f"Xvfb {display}"]
         if subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
             continue
@@ -35,14 +41,22 @@ def find_free_display():
 
 
 # ------------------------------------------------
-#  2. Lanzar Chrome maximizado sobre Xvfb y localizar su ventana
+#  2. Lanzar Chrome maximizado sobre Xvfb y localizar su ventana con xdotool
 # ------------------------------------------------
 def start_chrome_linux():
     """
-    1) Encuentra DISPLAY libre y arranca Xvfb.
-    2) Lanza Chrome en modo maximizado (--start-maximized).
-    3) Espera, localiza la ventana de Chrome con wmctrl y obtiene su ID, posición y tamaño.
-    4) Devuelve un dict con toda esa info.
+    1) Arranca Xvfb en un DISPLAY libre
+    2) Lanza Chrome en modo maximizado (--start-maximized)
+    3) Espera, luego busca con xdotool la ventana de Chrome
+    4) Devuelve un dict con:
+       {
+         "session_id": <uuid>,
+         "pid_xvfb": <pid>,
+         "pid_chrome": <pid>,
+         "display": ":N",
+         "window_id": <id_hexa>,
+         "geometry": (x, y, width, height)
+       }
     """
     with lock:
         # 1) Arrancar Xvfb
@@ -51,7 +65,7 @@ def start_chrome_linux():
         xvfb_proc = subprocess.Popen(cmd_xvfb, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1)
 
-        # 2) Lanzar Chrome maximizado en ese DISPLAY (ruta absoluta)
+        # 2) Lanzar Chrome maximizado en ese DISPLAY
         env = os.environ.copy()
         env["DISPLAY"] = display
 
@@ -67,20 +81,13 @@ def start_chrome_linux():
         chrome_proc = subprocess.Popen(chrome_cmd, env=env,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 3) Esperar a que aparezca la ventana (5 s para asegurarse)
-        time.sleep(5)
+        # 3) Esperar a que Chrome abra su ventana (6 s para asegurar)
+        time.sleep(6)
 
-        # DEPURACIÓN: muestro la salida de wmctrl para ver si Chrome ya apareció
-        print(f"DEBUG: LISTANDO ventanas en DISPLAY={display}")
-        try:
-            salida = subprocess.check_output(["wmctrl", "-lG"], env=env, encoding="utf-8")
-            print("DEBUG: salida wmctrl:\n" + salida)
-        except subprocess.CalledProcessError as e:
-            print(f"DEBUG: wmctrl falló: {e}")
-
-        window_info = _find_window_linux(display, "Chrome")
-        if window_info is None:
-            # Si no se detecta la ventana, matamos procesos y error
+        # 4) Buscar ventana de Chrome con xdotool
+        window_id = _find_chrome_window_xdotool(display)
+        if window_id is None:
+            # Si no se detecta ventana, matamos procesos y error
             try:
                 chrome_proc.terminate()
             except Exception:
@@ -91,7 +98,8 @@ def start_chrome_linux():
                 pass
             raise RuntimeError(f"No se detectó la ventana de Chrome en DISPLAY {display}.")
 
-        window_id, x, y, width, height = window_info
+        # 5) Obtener geometría (x,y,width,height) de la ventana completa
+        x, y, width, height = _get_window_geometry_xdotool(display, window_id)
 
         session_id = str(uuid.uuid4())
         return {
@@ -104,67 +112,98 @@ def start_chrome_linux():
         }
 
 
-def _find_window_linux(display, title_substring):
+def _find_chrome_window_xdotool(display):
     """
-    Usa `wmctrl -lG` sobre el DISPLAY dado para buscar la primera ventana
-    cuyo título contenga title_substring. Devuelve (window_id, x, y, w, h) o None.
+    Usa `xdotool search --onlyvisible --class "chrome"` para encontrar el primer
+    window_id cuyo nombre/clase contenga "Chrome". Retorna el ID (string hexa) o None.
     """
     env = os.environ.copy()
     env["DISPLAY"] = display
 
     try:
-        salida = subprocess.check_output(["wmctrl", "-lG"], env=env, encoding="utf-8")
+        # Buscamos ventanas visibles con clase/class "chrome"
+        salida = subprocess.check_output(
+            ["xdotool", "search", "--onlyvisible", "--class", "chrome"],
+            env=env, encoding="utf-8"
+        ).strip().splitlines()
     except subprocess.CalledProcessError:
         return None
 
-    for linea in salida.splitlines():
-        partes = linea.split(None, 7)
-        if len(partes) < 8:
-            continue
-        win_id, _, x_str, y_str, w_str, h_str, _, title = partes
-        if title_substring.lower() in title.lower():
-            try:
-                x = int(x_str)
-                y = int(y_str)
-                w = int(w_str)
-                h = int(h_str)
-            except ValueError:
-                continue
-            return (win_id, x, y, w, h)
+    # stdout puede listar varios, tomamos el primero
+    if salida:
+        return salida[0].strip()
     return None
 
 
+def _get_window_geometry_xdotool(display, window_id):
+    """
+    Llama a `xdotool getwindowgeometry --shell <window_id>` para obtener:
+      X=...
+      Y=...
+      WIDTH=...
+      HEIGHT=...
+    Retorna (x, y, width, height) como enteros.
+    """
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+
+    try:
+        salida = subprocess.check_output(
+            ["xdotool", "getwindowgeometry", "--shell", window_id],
+            env=env, encoding="utf-8"
+        )
+    except subprocess.CalledProcessError:
+        raise RuntimeError("No se pudo obtener geometría de la ventana con xdotool.")
+
+    # Parsear líneas como "X=0", "Y=0", "WIDTH=1920", "HEIGHT=1080", ...
+    x = y = width = height = None
+    for linea in salida.splitlines():
+        if linea.startswith("X="):
+            x = int(linea.split("=", 1)[1])
+        elif linea.startswith("Y="):
+            y = int(linea.split("=", 1)[1])
+        elif linea.startswith("WIDTH="):
+            width = int(linea.split("=", 1)[1])
+        elif linea.startswith("HEIGHT="):
+            height = int(linea.split("=", 1)[1])
+    if None in (x, y, width, height):
+        raise RuntimeError("Salida inesperada de getwindowgeometry: " + salida)
+    return (x, y, width, height)
+
+
 # ------------------------------------------------
-#  3. Capturar la ventana completa (incluyendo decoración)
+#  3. Capturar la ventana completa (incluye deco)
 # ------------------------------------------------
 def capture_window_linux(session_info, out_path):
     """
-    - Recalcula (x, y, w, h) con wmctrl para la ventana de Chrome.
-    - Usa ese rectángulo completo (incluye barras/bordes) como bbox.
-    - Captura con Pillow y guarda en out_path (PNG).
+    - Recalcula (x, y, w, h) con xdotool (en caso de que la ventana se moviera).
+    - Hace ImageGrab.grab(bbox=(x, y, x+w, y+h)); guarda PNG en out_path.
     - Devuelve el bbox usado.
     """
     with lock:
         display = session_info["display"]
 
-        # 1) Encontrar nuevamente la ventana (por si cambió de HWND)
-        window_info = _find_window_linux(display, "Chrome")
-        if window_info is None:
-            raise RuntimeError(f"No se encontró la ventana de Chrome al recapturar en DISPLAY {display}.")
+        # 1) Verificar que proceso siga vivo
+        pid_chrome = session_info["pid_chrome"]
+        try:
+            os.kill(pid_chrome, 0)
+        except OSError:
+            raise RuntimeError("El proceso de Chrome ya no existe en Linux.")
 
-        window_id, x, y, width, height = window_info
+        # 2) Rebuscar window_id (por si cambió)
+        window_id = _find_chrome_window_xdotool(display)
+        if window_id is None:
+            raise RuntimeError(f"No se encontró la ventana de Chrome al recapturar en DISPLAY {display}.")
         session_info["window_id"] = window_id
+
+        # 3) Obtener geometría completa
+        x, y, width, height = _get_window_geometry_xdotool(display, window_id)
         session_info["geometry"] = (x, y, width, height)
 
-        # 2) Definimos bbox = (x, y, x+width, y+height)
+        # 4) Definir bbox y capturar
         bbox = (x, y, x + width, y + height)
-
-        # 3) Ajustamos DISPLAY para Pillow
-        env = os.environ.copy()
-        env["DISPLAY"] = display
+        # Necesitamos exportar DISPLAY para que ImageGrab use Xvfb
         os.environ["DISPLAY"] = display
-
-        # 4) Captura
         img = ImageGrab.grab(bbox=bbox)
         img.save(out_path, "PNG")
         return bbox
@@ -175,33 +214,40 @@ def capture_window_linux(session_info, out_path):
 # ------------------------------------------------
 def click_window_linux(session_info, x_rel, y_rel):
     """
-    - Recalcula (x, y, w, h) con wmctrl.
-    - Interpreta (x_rel, y_rel) como coordenadas relativas a la esquina superior izquierda
-      de la ventana completa (incluye decoración).
+    - Recalcula (x, y, w, h) con xdotool.
+    - Interpreta (x_rel, y_rel) como coords relativas a ventana completa.
     - Usa `xdotool mousemove --window <window_id> <x_rel> <y_rel> click 1`.
-    - Devuelve (x_abs, y_abs) en coords de pantalla absolutas.
+    - Devuelve (x_abs, y_abs).
     """
     with lock:
         display = session_info["display"]
 
-        # 1) Encontrar ventana de nuevo
-        window_info = _find_window_linux(display, "Chrome")
-        if window_info is None:
-            raise RuntimeError(f"No se encontró la ventana de Chrome al hacer clic en DISPLAY {display}.")
+        # 1) Verificar proceso vivo
+        pid_chrome = session_info["pid_chrome"]
+        try:
+            os.kill(pid_chrome, 0)
+        except OSError:
+            raise RuntimeError("El proceso de Chrome ya no existe en Linux.")
 
-        window_id, x, y, width, height = window_info
+        # 2) Rebuscar window_id
+        window_id = _find_chrome_window_xdotool(display)
+        if window_id is None:
+            raise RuntimeError(f"No se encontró la ventana de Chrome al hacer clic en DISPLAY {display}.")
         session_info["window_id"] = window_id
+
+        # 3) Obtener geometría completa
+        x, y, width, height = _get_window_geometry_xdotool(display, window_id)
         session_info["geometry"] = (x, y, width, height)
 
-        # 2) Verificar que x_rel,y_rel estén dentro de (width, height)
+        # 4) Validar coords relativas
         if not (0 <= x_rel < width and 0 <= y_rel < height):
             raise ValueError(f"Coordenadas fuera de rango: ({x_rel}, {y_rel})")
 
-        # 3) Calcular coordenadas absolutas
+        # 5) Calcular coords absolutas
         x_abs = x + x_rel
         y_abs = y + y_rel
 
-        # 4) Ejecutar xdotool
+        # 6) Simular clic con xdotool
         env = os.environ.copy()
         env["DISPLAY"] = display
         try:
