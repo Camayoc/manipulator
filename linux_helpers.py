@@ -56,10 +56,8 @@ def start_chrome_linux():
         xvfb_proc = None
 
         if current_display:
-            # Si $DISPLAY está definido, asumimos que existe un X válido
             display = current_display
         else:
-            # No hay DISPLAY, arrancamos Xvfb
             display = find_free_display()
             usar_xvfb = True
             xvfb_proc = subprocess.Popen(
@@ -67,7 +65,7 @@ def start_chrome_linux():
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            time.sleep(1)  # dar tiempo a Xvfb para iniciar
+            time.sleep(1)
 
         # 2) Lanzar Chrome maximizado en ese DISPLAY
         env = os.environ.copy()
@@ -94,7 +92,6 @@ def start_chrome_linux():
         # 4) Buscar la ventana de Chrome con xdotool
         window_id = _find_chrome_window_xdotool(display)
         if window_id is None:
-            # Si no se detecta la ventana, matamos procesos y error
             try:
                 chrome_proc.terminate()
             except Exception:
@@ -247,6 +244,39 @@ def click_window_linux(session_info, x_rel, y_rel):
             raise RuntimeError(f"Error ejecutando xdotool: {e}")
 
         return (x_abs, y_abs)
+
+
+def type_text_linux(session_info, text):
+    """
+    Envía texto a la ventana de Chrome:
+      1) Verifica que el proceso de Chrome siga vivo.
+      2) Busca la ventana (window_id).
+      3) Llama a `xdotool type --window <window_id> --delay 100 "<text>"`.
+      4) Retorna True si tuvo éxito, lanza excepción si falla.
+    """
+    with lock:
+        display = session_info["display"]
+        pid_chrome = session_info["pid_chrome"]
+        try:
+            os.kill(pid_chrome, 0)
+        except OSError:
+            raise RuntimeError("El proceso de Chrome ya no existe en Linux.")
+
+        window_id = _find_chrome_window_xdotool(display)
+        if window_id is None:
+            raise RuntimeError(f"No se encontró la ventana de Chrome para enviar texto en DISPLAY {display}.")
+
+        env = os.environ.copy()
+        env["DISPLAY"] = display
+        try:
+            subprocess.check_call(
+                ["xdotool", "type", "--window", window_id, "--delay", "100", text],
+                env=env
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Error enviando texto con xdotool: {e}")
+
+        return True
 
 
 def stop_session_linux(session_info):
