@@ -25,7 +25,6 @@ def find_free_display():
         if socket_path.exists():
             continue
 
-        # Verificar si ya hay Xvfb corriendo en ese DISPLAY
         cmd = ["pgrep", "-f", f"Xvfb {display}"]
         if subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
             continue

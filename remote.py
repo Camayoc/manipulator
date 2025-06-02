@@ -9,9 +9,8 @@ from threading import Lock
 from flask import Flask, jsonify, send_file, abort, request, render_template_string
 
 # Detectar sistema operativo
-SO = platform.system()  # "Linux", "Windows", "Darwin", etc.
+SO = platform.system()  # "Linux", "Windows", etc.
 
-# Importar los helpers según corresponda
 if SO == "Linux":
     import linux_helpers as helpers
 elif SO == "Windows":
@@ -19,45 +18,22 @@ elif SO == "Windows":
 else:
     raise RuntimeError(f"SO no soportado: {SO}")
 
-# Inicialización de Flask
 app = Flask(__name__)
 
 # ------------------------------------------------
-#  Estructuras globales “en memoria”
+#  Estructuras globales
 # ------------------------------------------------
-# sessions = {
-#   session_id: session_info_dict
-# }
 sessions = {}
 sessions_lock = Lock()
 
-# actions_log: lista de dicts
-# {
-#   "action_id": <uuid>,
-#   "timestamp": <ISO 8601 UTC>,
-#   "type": "capture" o "click",
-#   "session_id": ...,
-#   "details": { ... }
-# }
 actions_log = []
 actions_lock = Lock()
 
-# Carpeta para guardar capturas
 CAPTURES_DIR = os.path.join(os.getcwd(), "captures")
 os.makedirs(CAPTURES_DIR, exist_ok=True)
 
 
 def log_action(action_type, session_id, details):
-    """
-    Registra en actions_log:
-      {
-        "action_id": <uuid>,
-        "timestamp": <ISO 8601 UTC>,
-        "type": ...,
-        "session_id": ...,
-        "details": { ... }
-      }
-    """
     action_id = str(uuid.uuid4())
     timestamp = datetime.utcnow().isoformat() + "Z"
     entry = {
@@ -78,10 +54,7 @@ def log_action(action_type, session_id, details):
 @app.route("/start_session", methods=["POST"])
 def start_session():
     """
-    Inicia una nueva sesión remota invocando:
-      - helpers.start_chrome_linux()   si SO == "Linux"
-      - helpers.start_chrome_windows() si SO == "Windows"
-    Guarda session_info en sessions[session_id] y devuelve {"session_id": ...}
+    Inicia sesión remota. Muestra la excepción entera en consola si falla.
     """
     with sessions_lock:
         try:
@@ -90,6 +63,9 @@ def start_session():
             else:
                 session_info = helpers.start_chrome_windows()
         except Exception as e:
+            # Imprime la traza completa en consola
+            import traceback
+            traceback.print_exc()
             return jsonify({"error": str(e)}), 500
 
         sessions[session_info["session_id"]] = session_info
@@ -101,19 +77,12 @@ def start_session():
 # ------------------------------------------------
 @app.route("/get_capture/<session_id>", methods=["GET"])
 def get_capture(session_id):
-    """
-    Recaptura la ventana (zona cliente) y devuelve un PNG:
-      - helpers.capture_window_linux(...) si SO == "Linux"
-      - helpers.capture_window_windows(...) si SO == "Windows"
-    Registra la acción en el log y sirve el archivo.
-    """
     with sessions_lock:
         session_info = sessions.get(session_id)
         if not session_info:
             return abort(404)
 
-    # Preparamos ruta de salida y registramos la acción “pending”
-    action_id = log_action("capture", session_id, {"note": "pendiente_bbox"})
+    action_id = log_action("capture", session_id, {"note": "pendiente"})
     out_path = os.path.join(CAPTURES_DIR, f"{action_id}.png")
 
     try:
@@ -122,12 +91,13 @@ def get_capture(session_id):
         else:
             bbox = helpers.capture_window_windows(session_info, out_path)
     except Exception as e:
-        # Si falló, borramos la acción del log y devolvemos error
+        import traceback
+        traceback.print_exc()
+        # Borrar la acción del log si falló
         with actions_lock:
             actions_log[:] = [a for a in actions_log if a["action_id"] != action_id]
         return jsonify({"error": str(e)}), 500
 
-    # Actualizamos el detalle del bbox en el log
     with actions_lock:
         for act in actions_log:
             if act["action_id"] == action_id:
@@ -142,11 +112,6 @@ def get_capture(session_id):
 # ------------------------------------------------
 @app.route("/click/<session_id>", methods=["POST"])
 def click_window(session_id):
-    """
-    Recibe JSON {"x": <int>, "y": <int>}.
-    Invoca helpers.click_window_linux o ...windows.
-    Registra acción y devuelve {"action_id": ..., "status": "ok"}.
-    """
     data = request.get_json()
     if not data or "x" not in data or "y" not in data:
         return jsonify({"error": "JSON inválido. Se requiere 'x' e 'y'."}), 400
@@ -168,20 +133,18 @@ def click_window(session_id):
             "x_rel": x_rel, "y_rel": y_rel, "x_abs": x_abs, "y_abs": y_abs
         })
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"action_id": action_id, "status": "ok"})
 
 
 # ------------------------------------------------
-#  ENDPOINT: /stop_session/<session_id>  (POST o GET)
+#  ENDPOINT: /stop_session/<session_id>  (POST|GET)
 # ------------------------------------------------
 @app.route("/stop_session/<session_id>", methods=["POST", "GET"])
 def stop_session(session_id):
-    """
-    Invoca helpers.stop_session_linux o ...windows según el SO,
-    borra la sesión de sessions y devuelve {"stopped": True}.
-    """
     with sessions_lock:
         session_info = sessions.get(session_id)
         if not session_info:
@@ -206,9 +169,6 @@ def stop_session(session_id):
 # ------------------------------------------------
 @app.route("/actions", methods=["GET"])
 def view_actions():
-    """
-    Renderiza un HTML sencillo con la tabla de actions_log.
-    """
     with actions_lock:
         html = """
         <!DOCTYPE html>
