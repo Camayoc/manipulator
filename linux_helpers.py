@@ -1,7 +1,7 @@
 # linux_helpers.py
 # ----------------
 # Lógica específica para ejecutar y controlar Chrome en Linux (X11 + Xvfb),
-# arrancando maximizado y capturando toda la ventana (incluye barras y bordes).
+# arrancando maximizado y capturando toda la ventana (incluye decoración).
 
 import os
 import time
@@ -52,22 +52,32 @@ def start_chrome_linux():
         xvfb_proc = subprocess.Popen(cmd_xvfb, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1)
 
-        # 2) Lanzar Chrome maximizado en ese DISPLAY
+        # 2) Lanzar Chrome maximizado en ese DISPLAY (ruta absoluta)
         env = os.environ.copy()
         env["DISPLAY"] = display
+
         chrome_exe = "/usr/bin/google-chrome"
         chrome_cmd = [
             chrome_exe,
             "--no-sandbox",
             "--disable-gpu",
             "--start-maximized",
+            f"--user-data-dir=/tmp/remote-profile-{uuid.uuid4()}",
             "about:blank"
         ]
         chrome_proc = subprocess.Popen(chrome_cmd, env=env,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 3) Esperar a que aparezca la ventana
-        time.sleep(2)
+        # 3) Esperar a que aparezca la ventana (5 s para asegurarse)
+        time.sleep(5)
+
+        # DEPURACIÓN: muestro la salida de wmctrl para ver si Chrome ya apareció
+        print(f"DEBUG: LISTANDO ventanas en DISPLAY={display}")
+        try:
+            salida = subprocess.check_output(["wmctrl", "-lG"], env=env, encoding="utf-8")
+            print("DEBUG: salida wmctrl:\n" + salida)
+        except subprocess.CalledProcessError as e:
+            print(f"DEBUG: wmctrl falló: {e}")
 
         window_info = _find_window_linux(display, "Chrome")
         if window_info is None:
@@ -91,7 +101,6 @@ def start_chrome_linux():
             "pid_chrome": chrome_proc.pid,
             "display": display,
             "window_id": window_id,
-            # Ya no usamos 'decor' ni 'geometry' separados: guardamos la geometría completa
             "geometry": (x, y, width, height)
         }
 
@@ -163,7 +172,7 @@ def capture_window_linux(session_info, out_path):
 
 
 # ------------------------------------------------
-#  4. Simular clic en la ventana Linux (xdotool)
+#  4. Simular clic en la ventana completa (xdotool)
 # ------------------------------------------------
 def click_window_linux(session_info, x_rel, y_rel):
     """
