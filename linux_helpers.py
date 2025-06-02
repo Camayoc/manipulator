@@ -1,14 +1,3 @@
-# linux_helpers.py
-# ----------------
-# Lógica para Linux que:
-#  1. Detecta si hay un DISPLAY X real (por ejemplo ":0")
-#  2. Si no hay DISPLAY, arranca Xvfb en uno libre
-#  3. Lanza Chrome maximizado en ese DISPLAY
-#  4. Busca la ventana de Chrome con xdotool y obtiene su geometría
-#  5. Captura toda la ventana con PIL.ImageGrab
-#  6. Simula clics usando xdotool
-#  7. Detiene procesos al cerrar la sesión
-
 import os
 import time
 import signal
@@ -18,24 +7,6 @@ from threading import Lock
 from PIL import ImageGrab
 
 lock = Lock()
-
-
-def display_activo(display):
-    """
-    Comprueba si el DISPLAY proporcionado está disponible para xdotool.
-    Retorna True si `xdotool getdisplaygeometry <display>` no falla.
-    """
-    env = os.environ.copy()
-    env["DISPLAY"] = display
-    try:
-        subprocess.check_output(
-            ["xdotool", "getdisplaygeometry", display],
-            env=env,
-            stderr=subprocess.DEVNULL
-        )
-        return True
-    except Exception:
-        return False
 
 
 def find_free_display():
@@ -63,7 +34,7 @@ def find_free_display():
 def start_chrome_linux():
     """
     Inicia una sesión remota de Chrome en Linux:
-      1) Si ya existe $DISPLAY activo y válido, se usa ese.
+      1) Si ya existe $DISPLAY, se usa ese.
       2) Si no, se arranca Xvfb en un display libre.
       3) Se lanza Chrome con --start-maximized en el DISPLAY elegido.
       4) Se espera a que abra la ventana y se busca con xdotool.
@@ -79,15 +50,16 @@ def start_chrome_linux():
          }
     """
     with lock:
-        # 1) Comprobar si $DISPLAY ya está definido y activo
+        # 1) Determinar qué DISPLAY usar
         current_display = os.environ.get("DISPLAY")
         usar_xvfb = False
         xvfb_proc = None
 
-        if current_display and display_activo(current_display):
+        if current_display:
+            # Si $DISPLAY está definido, asumimos que existe un X válido
             display = current_display
         else:
-            # No hay X en marcha, arrancamos Xvfb
+            # No hay DISPLAY, arrancamos Xvfb
             display = find_free_display()
             usar_xvfb = True
             xvfb_proc = subprocess.Popen(
@@ -97,7 +69,7 @@ def start_chrome_linux():
             )
             time.sleep(1)  # dar tiempo a Xvfb para iniciar
 
-        # 2) Lanzar Chrome en modo maximizado sobre el DISPLAY
+        # 2) Lanzar Chrome maximizado en ese DISPLAY
         env = os.environ.copy()
         env["DISPLAY"] = display
 
@@ -107,7 +79,6 @@ def start_chrome_linux():
             "--no-sandbox",
             "--disable-gpu",
             "--start-maximized",
-            f"--user-data-dir=/tmp/remote-profile-{uuid.uuid4()}",
             "about:blank"
         ]
         chrome_proc = subprocess.Popen(
@@ -117,7 +88,7 @@ def start_chrome_linux():
             stderr=subprocess.DEVNULL
         )
 
-        # 3) Esperar a que Chrome abra la ventana
+        # 3) Esperar a que Chrome abra la ventana (6 s)
         time.sleep(6)
 
         # 4) Buscar la ventana de Chrome con xdotool
@@ -205,7 +176,7 @@ def capture_window_linux(session_info, out_path):
       1) Verifica que el proceso de Chrome siga vivo.
       2) Busca la ventana nuevamente con xdotool (puede haberse movido).
       3) Obtiene la geometría completa.
-      4) Hace ImageGrab.grab(bbox=(x,y,x+width,y+height)) usando DISPLAY correcto.
+      4) Hace ImageGrab.grab(bbox=(x,y,x+width,y+height)) usando el DISPLAY.
       5) Guarda PNG en out_path y retorna el bbox.
     """
     with lock:
@@ -267,7 +238,9 @@ def click_window_linux(session_info, x_rel, y_rel):
         env["DISPLAY"] = display
         try:
             subprocess.check_call(
-                ["xdotool", "mousemove", "--window", window_id, str(x_rel), str(y_rel), "click", "1"],
+                [
+                    "xdotool", "mousemove", "--window", window_id, str(x_rel), str(y_rel), "click", "1"
+                ],
                 env=env
             )
         except subprocess.CalledProcessError as e:
