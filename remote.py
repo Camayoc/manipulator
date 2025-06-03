@@ -53,9 +53,6 @@ def log_action(action_type, session_id, details):
 # ------------------------------------------------
 @app.route("/start_session", methods=["POST"])
 def start_session():
-    """
-    Inicia sesión remota. Muestra la excepción entera en consola si falla.
-    """
     with sessions_lock:
         try:
             if SO == "Linux":
@@ -63,7 +60,6 @@ def start_session():
             else:
                 session_info = helpers.start_chrome_windows()
         except Exception as e:
-            # Imprime la traza completa en consola
             import traceback
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
@@ -93,7 +89,6 @@ def get_capture(session_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        # Borrar la acción del log si falló
         with actions_lock:
             actions_log[:] = [a for a in actions_log if a["action_id"] != action_id]
         return jsonify({"error": str(e)}), 500
@@ -132,6 +127,36 @@ def click_window(session_id):
         action_id = log_action("click", session_id, {
             "x_rel": x_rel, "y_rel": y_rel, "x_abs": x_abs, "y_abs": y_abs
         })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({"action_id": action_id, "status": "ok"})
+
+
+# ------------------------------------------------
+#  ENDPOINT: /type/<session_id>  (POST)
+# ------------------------------------------------
+@app.route("/type/<session_id>", methods=["POST"])
+def type_text(session_id):
+    data = request.get_json()
+    if not data or "text" not in data:
+        return jsonify({"error": "JSON inválido. Se requiere 'text'."}), 400
+
+    text = data["text"]
+
+    with sessions_lock:
+        session_info = sessions.get(session_id)
+        if not session_info:
+            return abort(404)
+
+    try:
+        if SO == "Linux":
+            helpers.type_text_linux(session_info, text)
+        else:
+            helpers.type_text_windows(session_info, text)
+        action_id = log_action("type", session_id, {"text": text})
     except Exception as e:
         import traceback
         traceback.print_exc()
