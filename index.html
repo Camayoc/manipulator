@@ -13,19 +13,27 @@
     #pantalla {
       border: 1px solid #333;
       max-width: 100%;
-      cursor: crosshair; /* Indicador de “picker” */
+      cursor: crosshair;
     }
     #estado {
       margin-top: 10px;
     }
-    button {
+    button, input[type="text"] {
       margin: 5px;
       padding: 8px 12px;
+      font-size: 1em;
     }
-    #clickStatus {
+    #clickStatus, #typeStatus {
       margin-top: 5px;
       font-size: 0.9em;
       color: #555;
+    }
+    #controles {
+      display: none;
+      margin-top: 15px;
+    }
+    #typeContainer {
+      margin-top: 10px;
     }
   </style>
 </head>
@@ -36,9 +44,15 @@
   <button id="btnStop" disabled>Detener sesión</button>
   <div id="estado">Sesión inactiva.</div>
 
-  <div id="controles" style="display:none; margin-top: 15px;">
+  <div id="controles">
     <p>Haz clic directamente sobre la imagen para enviar un clic remoto.</p>
     <div id="clickStatus"></div>
+
+    <div id="typeContainer">
+      <input type="text" id="textInput" placeholder="Escribe aquí..." />
+      <button id="btnType">Enviar texto</button>
+      <div id="typeStatus"></div>
+    </div>
   </div>
 
   <div style="margin-top: 15px;">
@@ -48,14 +62,17 @@
   <script>
     let sessionId = null;
     let intervalo = null;
-    const FPS = 2; // 2 capturas por segundo (500 ms)
+    const FPS = 2; // 2 capturas por segundo
 
     const imgEl = document.getElementById("pantalla");
     const estadoEl = document.getElementById("estado");
     const clickStatusEl = document.getElementById("clickStatus");
+    const typeStatusEl = document.getElementById("typeStatus");
     const controlesEl = document.getElementById("controles");
     const btnStart = document.getElementById("btnStart");
     const btnStop = document.getElementById("btnStop");
+    const btnType = document.getElementById("btnType");
+    const textInput = document.getElementById("textInput");
 
     // Iniciar sesión remota
     btnStart.addEventListener("click", async () => {
@@ -72,7 +89,6 @@
           btnStop.disabled = false;
           btnStart.disabled = true;
 
-          // Cada 500 ms recargamos la imagen
           intervalo = setInterval(() => {
             imgEl.src = `/get_capture/${sessionId}?_=${Date.now()}`;
           }, 1000 / FPS);
@@ -95,6 +111,8 @@
       btnStop.disabled = true;
       btnStart.disabled = false;
       sessionId = null;
+      clickStatusEl.innerText = "";
+      typeStatusEl.innerText = "";
     });
 
     // Función auxiliar: enviar clic al servidor
@@ -120,28 +138,47 @@
     // Evento “picker”: al hacer clic sobre la imagen, calcular coordenadas relativas
     imgEl.addEventListener("click", event => {
       if (!sessionId) return;
-      // Obtener posición del elemento <img> en pantalla
       const rect = imgEl.getBoundingClientRect();
-      // Coordenadas del clic respecto a la esquina superior izquierda de la imagen en CSS px
       const clickX = event.clientX - rect.left;
       const clickY = event.clientY - rect.top;
-      // La imagen pudo haber sido escalada por “max-width:100%”
-      // Calculamos el factor real:
       const displayedWidth = imgEl.clientWidth;
       const displayedHeight = imgEl.clientHeight;
-      // La imagen original (capturada en el servidor) tenía un tamaño igual a la ventana remota:
-      // asumimos que la proporción se mantiene y que clientWidth/clientHeight está 
-      // escalado proporcionalmente a width/height reales.
-      // Por tanto:
       const relX = Math.round(clickX * (imgEl.naturalWidth / displayedWidth));
       const relY = Math.round(clickY * (imgEl.naturalHeight / displayedHeight));
-      // Enviamos ese clic relativo
       enviarClick(relX, relY);
     });
 
-    // Cuando la imagen se carga por primera vez, limpiamos mensaje de estado de clic
     imgEl.addEventListener("load", () => {
       clickStatusEl.innerText = "";
+    });
+
+    // Enviar texto al servidor
+    btnType.addEventListener("click", async () => {
+      if (!sessionId) {
+        alert("Primero inicia una sesión.");
+        return;
+      }
+      const text = textInput.value;
+      if (!text) {
+        typeStatusEl.innerText = "Ingresa texto antes de enviar.";
+        return;
+      }
+      typeStatusEl.innerText = `Enviando texto: "${text}"…`;
+      try {
+        const resp = await fetch(`/type/${sessionId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: text })
+        });
+        const data = await resp.json();
+        if (data.status === "ok") {
+          typeStatusEl.innerText = `Texto enviado correctamente.`;
+        } else {
+          typeStatusEl.innerText = `Error al enviar texto: ${data.error || "sin respuesta"}`;
+        }
+      } catch (e) {
+        typeStatusEl.innerText = `Error al enviar texto: ${e}`;
+      }
     });
   </script>
 </body>
