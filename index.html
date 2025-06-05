@@ -74,6 +74,20 @@
     const btnType = document.getElementById("btnType");
     const textInput = document.getElementById("textInput");
 
+    // Bandera para saber si la imagen está cargando
+    let isLoading = false;
+
+    // Cuando la imagen termine de cargar o falle, ponemos isLoading = false
+    imgEl.addEventListener("load", () => {
+      isLoading = false;
+      clickStatusEl.innerText = "";
+    });
+    imgEl.addEventListener("error", () => {
+      isLoading = false;
+      // Opcional: puedes mostrar mensaje de error si quieres
+      clickStatusEl.innerText = "Error cargando la imagen.";
+    });
+
     // Iniciar sesión remota
     btnStart.addEventListener("click", async () => {
       estadoEl.innerText = "Iniciando sesión…";
@@ -89,7 +103,14 @@
           btnStop.disabled = false;
           btnStart.disabled = true;
 
+          // Iniciamos el bucle de actualización de la imagen
           intervalo = setInterval(() => {
+            // Si ya está cargando una imagen, no intentamos otra
+            if (isLoading) {
+              return;
+            }
+            // Marcamos que vamos a cargar una nueva
+            isLoading = true;
             imgEl.src = `/get_capture/${sessionId}?_=${Date.now()}`;
           }, 1000 / FPS);
         } else {
@@ -111,6 +132,7 @@
       btnStop.disabled = true;
       btnStart.disabled = false;
       sessionId = null;
+      isLoading = false; // Reiniciamos la bandera
       clickStatusEl.innerText = "";
       typeStatusEl.innerText = "";
     });
@@ -146,10 +168,6 @@
       const relX = Math.round(clickX * (imgEl.naturalWidth / displayedWidth));
       const relY = Math.round(clickY * (imgEl.naturalHeight / displayedHeight));
       enviarClick(relX, relY);
-    });
-
-    imgEl.addEventListener("load", () => {
-      clickStatusEl.innerText = "";
     });
 
     // Enviar texto al servidor
