@@ -28,10 +28,23 @@
       margin-top: 5px;
       font-size: 0.9em;
       color: #555;
+      min-height: 1.2em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     #controles {
       display: none;
-      margin-top: 15px;
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: rgba(255,255,255,0.9);
+      border: 1px solid #ccc;
+      padding: 10px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      border-radius: 4px;
+      z-index: 1000;
+      max-width: 300px;
     }
     #typeContainer {
       margin-top: 10px;
