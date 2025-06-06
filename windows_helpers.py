@@ -1,7 +1,8 @@
 # windows_helpers.py
 # ------------------
 # Lógica específica para ejecutar y controlar Chrome en Windows (Win32 + PIL),
-# arrancando maximizado y capturando toda la ventana (incluye decoración).
+# arrancando maximizado y capturando toda la ventana (incluye decoración),
+# pero ahora devolviendo JPEG en un io.BytesIO en lugar de guardar PNG en disco.
 
 import os
 import time
@@ -9,7 +10,8 @@ import signal
 import uuid
 import subprocess
 from threading import Lock
-from PIL import ImageGrab
+from PIL import ImageGrab, Image
+import io
 
 import win32gui
 import win32process
@@ -106,13 +108,14 @@ def _get_window_rect_windows(hwnd):
 
 
 # ------------------------------------------------
-#  2. Capturar la ventana completa
+#  2. Capturar la ventana completa (ahora JPEG en memoria)
 # ------------------------------------------------
 def capture_window_windows(session_info, out_path):
     """
     Usa PIL.ImageGrab.grab(bbox) para capturar la región completa de la ventana
-    (obtiene coords con GetWindowRect). Guarda PNG en out_path.
-    Devuelve bbox usado.
+    (obtiene coords con GetWindowRect). EN LUGAR DE GUARDAR PNG, convierte a JPEG en un
+    io.BytesIO y retorna ese buffer. 'out_path' se IGNORA.
+    Devuelve el io.BytesIO con JPEG (posición al inicio).
     """
     with lock:
         hwnd = session_info["hwnd"]
@@ -124,21 +127,26 @@ def capture_window_windows(session_info, out_path):
         except OSError:
             raise RuntimeError("El proceso de Chrome ya no existe en Windows.")
 
-        # Volvemos a ubicar HWND (por si cambió)
+        # Reubicar HWND por si cambió
         new_hwnd = _find_chrome_window_windows(pid)
         if new_hwnd is None:
             raise RuntimeError("No se encontró el HWND de Chrome al recapturar en Windows.")
         session_info["hwnd"] = new_hwnd
 
-        # Obtenemos el rect completo
+        # Obtener el rect completo (left, top, right, bottom)
         left, top, right, bottom = _get_window_rect_windows(new_hwnd)
         rect = (left, top, right, bottom)
         session_info["window_rect"] = rect
 
-        # Capturamos
+        # Capturamos la región con PIL.ImageGrab
         img = ImageGrab.grab(bbox=rect)
-        img.save(out_path, "PNG")
-        return rect
+
+        # Convertir la imagen a JPEG en memoria
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=75)
+        buf.seek(0)
+
+        return buf
 
 
 # ------------------------------------------------
@@ -166,12 +174,12 @@ def click_window_windows(session_info, x_rel, y_rel):
             raise RuntimeError("No se encontró la ventana de Chrome al hacer clic en Windows.")
         session_info["hwnd"] = new_hwnd
 
-        # Obtener rect completo
+        # Obtener el rect completo
         left, top, right, bottom = _get_window_rect_windows(new_hwnd)
         width = right - left
         height = bottom - top
 
-        # Verificar rango
+        # Verificar que x_rel, y_rel estén dentro del tamaño de la ventana
         if not (0 <= x_rel < width and 0 <= y_rel < height):
             raise ValueError(f"Coordenadas fuera de rango: ({x_rel}, {y_rel})")
 
@@ -189,7 +197,46 @@ def click_window_windows(session_info, x_rel, y_rel):
 
 
 # ------------------------------------------------
-#  4. Detener sesión (matar Chrome)
+#  4. Envía texto a la ventana con xdotool
+# ------------------------------------------------
+def type_text_windows(session_info, text):
+    """
+    Envía texto a la ventana de Chrome (usa SendMessage+WM_CHAR, o bien puedes usar
+    SetForegroundWindow + teclado simulado). Aquí se asume que basta con SetForegroundWindow
+    y SendMessage de caracteres, pero para simplicidad usaremos win32api.keybd_event.
+    """
+    with lock:
+        hwnd = session_info["hwnd"]
+        pid = session_info["pid_chrome"]
+
+        # Verificar proceso vivo
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            raise RuntimeError("El proceso de Chrome ya no existe en Windows.")
+
+        # Reubicar HWND
+        new_hwnd = _find_chrome_window_windows(pid)
+        if new_hwnd is None:
+            raise RuntimeError("No se encontró la ventana de Chrome para enviar texto en Windows.")
+        session_info["hwnd"] = new_hwnd
+
+        # Traer la ventana al frente
+        win32gui.SetForegroundWindow(new_hwnd)
+        time.sleep(0.1)
+
+        # Enviar cada carácter como evento de teclado
+        for c in text:
+            vk = win32api.VkKeyScan(c)
+            win32api.keybd_event(vk, 0, 0, 0)           # tecla presionada
+            win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)  # tecla liberada
+            time.sleep(0.02)
+
+        return True
+
+
+# ------------------------------------------------
+#  5. Detener sesión (matar Chrome)
 # ------------------------------------------------
 def stop_session_windows(session_info):
     """

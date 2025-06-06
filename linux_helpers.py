@@ -1,10 +1,13 @@
+# linux_helpers.py
 import os
 import time
 import signal
 import uuid
 import subprocess
 from threading import Lock
-from PIL import ImageGrab
+from pathlib import Path
+from PIL import ImageGrab, Image
+import io
 
 lock = Lock()
 
@@ -14,13 +17,12 @@ def find_free_display():
     Busca un DISPLAY libre para Xvfb, probando ":1", ":2", ...
     Retorna el primer display disponible.
     """
-    from pathlib import Path
-
     for n in range(1, 100):
         d = f":{n}"
         socket_path = Path(f"/tmp/.X11-unix/X{n}")
         if socket_path.exists():
             continue
+        # Verificamos que no haya un proceso Xvfb corriendo en ese display
         if subprocess.call(
             ["pgrep", "-f", f"Xvfb {d}"],
             stdout=subprocess.DEVNULL,
@@ -96,7 +98,7 @@ def start_chrome_linux():
                 chrome_proc.terminate()
             except Exception:
                 pass
-            if usar_xvfb:
+            if usar_xvfb and xvfb_proc:
                 try:
                     xvfb_proc.terminate()
                 except Exception:
@@ -169,34 +171,46 @@ def _get_window_geometry_xdotool(display, window_id):
 
 def capture_window_linux(session_info, out_path):
     """
-    Captura la ventana completa de Chrome:
+    Captura la ventana completa de Chrome y devuelve un BytesIO con JPEG en memoria.
       1) Verifica que el proceso de Chrome siga vivo.
       2) Busca la ventana nuevamente con xdotool (puede haberse movido).
       3) Obtiene la geometría completa.
       4) Hace ImageGrab.grab(bbox=(x,y,x+width,y+height)) usando el DISPLAY.
-      5) Guarda PNG en out_path y retorna el bbox.
+      5) Genera un JPEG en un io.BytesIO (calidad 75) y lo retorna.
+      6) IGNORA 'out_path' (ya no se escribe PNG en disco).
     """
     with lock:
         display = session_info["display"]
         pid_chrome = session_info["pid_chrome"]
+
+        # 1) Verificar que Chrome siga vivo
         try:
             os.kill(pid_chrome, 0)
         except OSError:
             raise RuntimeError("El proceso de Chrome ya no existe en Linux.")
 
+        # 2) Volver a encontrar el window_id (por si se movió)
         window_id = _find_chrome_window_xdotool(display)
         if window_id is None:
             raise RuntimeError(f"No se encontró la ventana de Chrome al recapturar en DISPLAY {display}.")
         session_info["window_id"] = window_id
 
+        # 3) Obtener geometría
         x, y, width, height = _get_window_geometry_xdotool(display, window_id)
         session_info["geometry"] = (x, y, width, height)
 
+        # 4) Capturar la pantalla con PIL.ImageGrab
         bbox = (x, y, x + width, y + height)
         os.environ["DISPLAY"] = display
         img = ImageGrab.grab(bbox=bbox)
-        img.save(out_path, "PNG")
-        return bbox
+
+        # 5) Convertir a JPEG en memoria
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=75)
+        buf.seek(0)
+
+        # 6) Devolver el buffer con JPEG
+        return buf
 
 
 def click_window_linux(session_info, x_rel, y_rel):
