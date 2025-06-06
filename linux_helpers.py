@@ -169,7 +169,7 @@ def _get_window_geometry_xdotool(display, window_id):
     return (x, y, width, height)
 
 
-def capture_window_linux(session_info, out_path):
+def capture_window_linux(session_info, out_path=None):
     """
     Captura la ventana completa de Chrome y devuelve un BytesIO con JPEG en memoria.
       1) Verifica que el proceso de Chrome siga vivo.
@@ -177,7 +177,7 @@ def capture_window_linux(session_info, out_path):
       3) Obtiene la geometría completa.
       4) Hace ImageGrab.grab(bbox=(x,y,x+width,y+height)) usando el DISPLAY.
       5) Genera un JPEG en un io.BytesIO (calidad 75) y lo retorna.
-      6) IGNORA 'out_path' (ya no se escribe PNG en disco).
+      6) IGNORA el parámetro opcional 'out_path' (ya no se escribe PNG en disco).
     """
     with lock:
         display = session_info["display"]

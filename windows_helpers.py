@@ -110,11 +110,11 @@ def _get_window_rect_windows(hwnd):
 # ------------------------------------------------
 #  2. Capturar la ventana completa (ahora JPEG en memoria)
 # ------------------------------------------------
-def capture_window_windows(session_info, out_path):
+def capture_window_windows(session_info, out_path=None):
     """
     Usa PIL.ImageGrab.grab(bbox) para capturar la región completa de la ventana
     (obtiene coords con GetWindowRect). EN LUGAR DE GUARDAR PNG, convierte a JPEG en un
-    io.BytesIO y retorna ese buffer. 'out_path' se IGNORA.
+    io.BytesIO y retorna ese buffer. El parámetro opcional 'out_path' se IGNORA.
     Devuelve el io.BytesIO con JPEG (posición al inicio).
     """
     with lock:
