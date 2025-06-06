@@ -14,6 +14,7 @@
       border: 1px solid #333;
       max-width: 100%;
       cursor: crosshair;
+      display: none;
     }
     #estado {
       margin-top: 10px;
@@ -45,7 +46,7 @@
   <div id="estado">Sesión inactiva.</div>
 
   <div id="controles">
-    <p>Haz clic directamente sobre la imagen para enviar un clic remoto.</p>
+    <p>Haz clic sobre la imagen para enviar un clic remoto.</p>
     <div id="clickStatus"></div>
 
     <div id="typeContainer">
@@ -56,13 +57,14 @@
   </div>
 
   <div style="margin-top: 15px;">
-    <img id="pantalla" src="" alt="Aquí se mostrará la captura" style="display:none;" />
+    <img id="pantalla" src="" alt="Aquí se mostrará la captura" />
   </div>
 
   <script>
     let sessionId = null;
     let intervalo = null;
-    const FPS = 2; // 2 capturas por segundo
+    const FPS = 1;           // 1 captura por segundo (ajusta según tu backend)
+    const TIMEOUT_MS = 800;  // 0.8 seg de espera máximo por cada descarga
 
     const imgEl = document.getElementById("pantalla");
     const estadoEl = document.getElementById("estado");
@@ -74,21 +76,71 @@
     const btnType = document.getElementById("btnType");
     const textInput = document.getElementById("textInput");
 
-    // Bandera para saber si la imagen está cargando
     let isLoading = false;
+    let lastRequestTimestamp = 0;
+    let timeoutHandler = null;
 
-    // Cuando la imagen termine de cargar o falle, ponemos isLoading = false
-    imgEl.addEventListener("load", () => {
-      isLoading = false;
-      clickStatusEl.innerText = "";
-    });
-    imgEl.addEventListener("error", () => {
-      isLoading = false;
-      // Opcional: puedes mostrar mensaje de error si quieres
-      clickStatusEl.innerText = "Error cargando la imagen.";
-    });
+    function actualizarImagen() {
+      if (!sessionId) return;
 
-    // Iniciar sesión remota
+      // Si seguimos “cargando” y no hemos pasado el timeout, salimos
+      if (isLoading && (Date.now() - lastRequestTimestamp) < TIMEOUT_MS) {
+        return;
+      }
+      // Si seguimos “cargando” pero YA pasó TIMEOUT_MS, cancelamos y reiniciamos
+      if (isLoading && (Date.now() - lastRequestTimestamp) >= TIMEOUT_MS) {
+        isLoading = false;
+        clickStatusEl.innerText = "La descarga anterior tardó demasiado; intentando de nuevo…";
+        if (timeoutHandler) {
+          clearTimeout(timeoutHandler);
+          timeoutHandler = null;
+        }
+      }
+
+      // Iniciamos la descarga de la nueva captura por “off-screen”
+      isLoading = true;
+      lastRequestTimestamp = Date.now();
+      clickStatusEl.innerText = "Descargando nueva captura…";
+
+      const nuevaURL = `/get_capture/${sessionId}?_=${Date.now()}`;
+      const imgTemp = new Image();
+
+      // Timeout manual: si no hay onload ni onerror en TIMEOUT_MS, lo consideramos fallido
+      timeoutHandler = setTimeout(() => {
+        timeoutHandler = null;
+        if (isLoading) {
+          isLoading = false;
+          clickStatusEl.innerText = "Timeout al descargar. Intentando en el próximo ciclo…";
+        }
+      }, TIMEOUT_MS);
+
+      imgTemp.onload = () => {
+        // Si ya expiró el timeout, ignoramos
+        if (!isLoading && (Date.now() - lastRequestTimestamp) >= TIMEOUT_MS) {
+          return;
+        }
+        if (timeoutHandler) {
+          clearTimeout(timeoutHandler);
+          timeoutHandler = null;
+        }
+        imgEl.src = nuevaURL;
+        isLoading = false;
+        clickStatusEl.innerText = "";
+      };
+
+      imgTemp.onerror = () => {
+        if (timeoutHandler) {
+          clearTimeout(timeoutHandler);
+          timeoutHandler = null;
+        }
+        isLoading = false;
+        clickStatusEl.innerText = "Error descargando la captura.";
+      };
+
+      // Lanza la descarga
+      imgTemp.src = nuevaURL;
+    }
+
     btnStart.addEventListener("click", async () => {
       estadoEl.innerText = "Iniciando sesión…";
       try {
@@ -103,16 +155,8 @@
           btnStop.disabled = false;
           btnStart.disabled = true;
 
-          // Iniciamos el bucle de actualización de la imagen
-          intervalo = setInterval(() => {
-            // Si ya está cargando una imagen, no intentamos otra
-            if (isLoading) {
-              return;
-            }
-            // Marcamos que vamos a cargar una nueva
-            isLoading = true;
-            imgEl.src = `/get_capture/${sessionId}?_=${Date.now()}`;
-          }, 1000 / FPS);
+          // Arrancamos el bucle de actualización:
+          intervalo = setInterval(actualizarImagen, 1000 / FPS);
         } else {
           estadoEl.innerText = "Error al iniciar: " + (data.error || "sin respuesta");
         }
@@ -121,7 +165,6 @@
       }
     });
 
-    // Detener sesión remota
     btnStop.addEventListener("click", async () => {
       if (!sessionId) return;
       await fetch(`/stop_session/${sessionId}`, { method: "POST" });
@@ -132,12 +175,27 @@
       btnStop.disabled = true;
       btnStart.disabled = false;
       sessionId = null;
-      isLoading = false; // Reiniciamos la bandera
+      isLoading = false;
+      if (timeoutHandler) {
+        clearTimeout(timeoutHandler);
+        timeoutHandler = null;
+      }
       clickStatusEl.innerText = "";
       typeStatusEl.innerText = "";
     });
 
-    // Función auxiliar: enviar clic al servidor
+    imgEl.addEventListener("click", event => {
+      if (!sessionId) return;
+      const rect = imgEl.getBoundingClientRect();
+      const clickX = event.clientX - rect.left;
+      const clickY = event.clientY - rect.top;
+      const displayedWidth = imgEl.clientWidth;
+      const displayedHeight = imgEl.clientHeight;
+      const relX = Math.round(clickX * (imgEl.naturalWidth / displayedWidth));
+      const relY = Math.round(clickY * (imgEl.naturalHeight / displayedHeight));
+      enviarClick(relX, relY);
+    });
+
     async function enviarClick(x_rel, y_rel) {
       clickStatusEl.innerText = `Enviando clic a (${x_rel}, ${y_rel})…`;
       try {
@@ -157,20 +215,6 @@
       }
     }
 
-    // Evento “picker”: al hacer clic sobre la imagen, calcular coordenadas relativas
-    imgEl.addEventListener("click", event => {
-      if (!sessionId) return;
-      const rect = imgEl.getBoundingClientRect();
-      const clickX = event.clientX - rect.left;
-      const clickY = event.clientY - rect.top;
-      const displayedWidth = imgEl.clientWidth;
-      const displayedHeight = imgEl.clientHeight;
-      const relX = Math.round(clickX * (imgEl.naturalWidth / displayedWidth));
-      const relY = Math.round(clickY * (imgEl.naturalHeight / displayedHeight));
-      enviarClick(relX, relY);
-    });
-
-    // Enviar texto al servidor
     btnType.addEventListener("click", async () => {
       if (!sessionId) {
         alert("Primero inicia una sesión.");
